@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>时钟</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;500;700&family=Noto+Sans+SC:wght@300;400;700&display=swap');
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            height: 100vh;
+            overflow: hidden;
+            position: relative;
+            background: #04070f url('2.png') center / contain no-repeat;
+        }
+
+        .atmo-canvas {
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            z-index: 5;
+            opacity: 1;
+        }
+
+        .time-container {
+            text-align: center;
+            padding: 20px 50px;
+            position: fixed;
+            right: 15%;
+            top: 50%;
+            transform: translateY(-50%) scale(1);
+            transform-origin: top left;
+            cursor: move;
+            user-select: none;
+            z-index: 20;
+        }
+
+        .time-container.dragging {
+            opacity: 0.7;
+        }
+
+        .time-display {
+            font-family: 'Poppins', 'Noto Sans SC', sans-serif;
+            font-size: 7rem;
+            font-weight: 700;
+            color: #ffffff;
+            text-shadow:
+                0 4px 8px rgba(0, 0, 0, 0.3),
+                0 0 20px rgba(255, 255, 255, 0.5),
+                0 0 40px rgba(200, 200, 255, 0.3);
+            letter-spacing: 0.05em;
+            line-height: 1;
+        }
+
+        .date-display {
+            font-family: 'Poppins', 'Noto Sans SC', sans-serif;
+            font-size: 2rem;
+            font-weight: 300;
+            color: #e0e0e0;
+            margin-top: 15px;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+            letter-spacing: 0.02em;
+        }
+
+        .fullscreen-btn {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            border: 2px solid rgba(255, 255, 255, 0.7);
+            background: rgba(0, 0, 0, 0.3);
+            color: #ffffff;
+            font-size: 1.5rem;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s ease;
+            z-index: 100;
+        }
+
+        .fullscreen-btn:hover {
+            background: rgba(255, 255, 255, 0.2);
+            border-color: #ffffff;
+            transform: scale(1.1);
+        }
+
+        @media (max-width: 768px) {
+            .time-display {
+                font-size: 3.5rem;
+            }
+
+            .date-display {
+                font-size: 1.2rem;
+            }
+
+            .time-container {
+                padding: 15px 30px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <canvas id="atmo-canvas" class="atmo-canvas"></canvas>
+    <button class="fullscreen-btn" id="fullscreen-btn" title="全屏">⛶</button>
+    <div class="time-container" id="time-container">
+        <div class="time-display" id="time">00:00:00</div>
+        <div class="date-display" id="date"></div>
+    </div>
+
+    <script>
+        const atmoCanvas = document.getElementById('atmo-canvas');
+        const atmoCtx = atmoCanvas.getContext('2d');
+        const twinkles = [];
+        const streaks = [{}, {}, {}];
+        const glowPoints = [
+            { rx: 0.52, ry: 0.12, radius: 38, alpha: 0.12, phase: 0.6 },
+            { rx: 0.58, ry: 0.09, radius: 30, alpha: 0.10, phase: 2.1 },
+            { rx: 0.64, ry: 0.08, radius: 22, alpha: 0.08, phase: 4.0 }
+        ];
+        const orbitGlints = [
+            { phase: 0.1, speed: 0.0022, size: 2.2, alpha: 0.48 },
+            { phase: 0.42, speed: 0.0019, size: 1.9, alpha: 0.42 },
+            { phase: 0.76, speed: 0.0024, size: 2.4, alpha: 0.36 }
+        ];
+        const ambientPulses = [
+            { rx: 0.52, ry: 0.61, radius: 170, alpha: 0.10, phase: 0.4, driftX: 3.0, driftY: 1.6, warm: true },
+            { rx: 0.30, ry: 0.67, radius: 26, alpha: 0.10, phase: 1.4, driftX: 1.4, driftY: 0.9, warm: true },
+            { rx: 0.80, ry: 0.21, radius: 12, alpha: 0.07, phase: 2.6, driftX: 1.1, driftY: 0.7, warm: false },
+            { rx: 0.77, ry: 0.25, radius: 9, alpha: 0.06, phase: 3.8, driftX: 0.9, driftY: 0.6, warm: false }
+        ];
+
+        let canvasW = window.innerWidth;
+        let canvasH = window.innerHeight;
+        let bgNaturalW = 1536;
+        let bgNaturalH = 1024;
+        let bgRect = { x: 0, y: 0, w: canvasW, h: canvasH };
+        let skyRect = { x: 0, y: 0, w: 0, h: 0 };
+        let dpr = Math.min(window.devicePixelRatio || 1, 2);
+
+        function randomBetween(min, max) {
+            return min + Math.random() * (max - min);
+        }
+
+        function updateCanvasSize() {
+            canvasW = window.innerWidth;
+            canvasH = window.innerHeight;
+            dpr = Math.min(window.devicePixelRatio || 1, 2);
+            atmoCanvas.width = Math.floor(canvasW * dpr);
+            atmoCanvas.height = Math.floor(canvasH * dpr);
+            atmoCanvas.style.width = `${canvasW}px`;
+            atmoCanvas.style.height = `${canvasH}px`;
+            atmoCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        }
+
+        function updateBgRect() {
+            const bgAspect = bgNaturalW / bgNaturalH;
+            let drawW = canvasW;
+            let drawH = drawW / bgAspect;
+
+            if (drawH > canvasH) {
+                drawH = canvasH;
+                drawW = drawH * bgAspect;
+            }
+
+            const offsetX = (canvasW - drawW) / 2;
+            const offsetY = (canvasH - drawH) / 2;
+            bgRect = { x: offsetX, y: offsetY, w: drawW, h: drawH };
+
+            skyRect = {
+                x: bgRect.x + bgRect.w * 0.16,
+                y: bgRect.y + bgRect.h * 0.01,
+                w: bgRect.w * 0.66,
+                h: bgRect.h * 0.46
+            };
+        }
+
+        function randomSkyPoint() {
+            return {
+                x: randomBetween(skyRect.x, skyRect.x + skyRect.w),
+                y: randomBetween(skyRect.y, skyRect.y + skyRect.h)
+            };
+        }
+
+        function initTwinkles() {
+            twinkles.length = 0;
+            for (let i = 0; i < 34; i += 1) {
+                const p = randomSkyPoint();
+                twinkles.push({
+                    baseX: p.x,
+                    baseY: p.y,
+                    radius: randomBetween(0.7, 2.1),
+                    alpha: randomBetween(0.12, 0.28),
+                    phase: randomBetween(0, Math.PI * 2),
+                    speed: randomBetween(0.005, 0.012),
+                    drift: randomBetween(0.6, 2.4)
+                });
+            }
+        }
+
+        function resetStreak(streak, withDelay = true) {
+            streak.startX = randomBetween(skyRect.x + skyRect.w * 0.64, skyRect.x + skyRect.w * 0.96);
+            streak.startY = randomBetween(skyRect.y + skyRect.h * 0.01, skyRect.y + skyRect.h * 0.22);
+            streak.length = randomBetween(75, 140);
+            streak.speed = randomBetween(1.2, 2.2);
+            streak.tailAngle = randomBetween(0.26, 0.34);
+            streak.alpha = randomBetween(0.12, 0.24);
+            streak.progress = 0;
+            streak.active = false;
+            streak.cooldown = withDelay ? randomBetween(140, 520) : randomBetween(90, 180);
+        }
+
+        function initAtmo() {
+            updateCanvasSize();
+            updateBgRect();
+            initTwinkles();
+            streaks.forEach((streak) => resetStreak(streak, true));
+            orbitGlints.forEach((glint, index) => {
+                glint.phase = [0.12, 0.45, 0.78][index];
+            });
+            ambientPulses.forEach((pulse, index) => {
+                pulse.phase = [0.4, 1.4, 2.6, 3.8][index];
+            });
+        }
+
+        function drawTwinkles(frame) {
+            for (const star of twinkles) {
+                star.phase += star.speed;
+                const flicker = 0.8 + Math.sin(star.phase + frame * 0.0011) * 0.2;
+                const x = star.baseX + Math.sin(star.phase * 0.5) * star.drift;
+                const y = star.baseY + Math.cos(star.phase * 0.45) * star.drift * 0.45;
+                atmoCtx.beginPath();
+                atmoCtx.arc(x, y, star.radius, 0, Math.PI * 2);
+                atmoCtx.fillStyle = `rgba(210,230,255,${star.alpha * flicker})`;
+                atmoCtx.fill();
+            }
+        }
+
+        function drawGlow(frame) {
+            for (const g of glowPoints) {
+                const pulse = 0.75 + Math.sin(frame * 0.0009 + g.phase) * 0.25;
+                const x = bgRect.x + bgRect.w * g.rx;
+                const y = bgRect.y + bgRect.h * g.ry;
+                const radius = g.radius * pulse;
+                const gradient = atmoCtx.createRadialGradient(x, y, 0, x, y, radius);
+                gradient.addColorStop(0, `rgba(255,240,190,${g.alpha * pulse})`);
+                gradient.addColorStop(0.35, `rgba(194,216,255,${g.alpha * 0.6 * pulse})`);
+                gradient.addColorStop(1, 'rgba(194,216,255,0)');
+                atmoCtx.fillStyle = gradient;
+                atmoCtx.beginPath();
+                atmoCtx.arc(x, y, radius, 0, Math.PI * 2);
+                atmoCtx.fill();
+            }
+        }
+
+        function drawStreaks() {
+            for (const streak of streaks) {
+                if (!streak.active) {
+                    streak.cooldown -= 1;
+                    if (streak.cooldown <= 0) {
+                        streak.active = true;
+                        streak.progress = 0;
+                    }
+                    continue;
+                }
+
+                streak.progress += streak.speed;
+                const headX = streak.startX - streak.progress;
+                const headY = streak.startY + streak.progress * streak.tailAngle;
+                const tailX = headX + streak.length;
+                const tailY = headY - streak.length * streak.tailAngle;
+
+                const gradient = atmoCtx.createLinearGradient(headX, headY, tailX, tailY);
+                gradient.addColorStop(0, `rgba(255,248,225,${streak.alpha})`);
+                gradient.addColorStop(0.35, `rgba(186,215,255,${streak.alpha * 0.55})`);
+                gradient.addColorStop(1, 'rgba(186,215,255,0)');
+
+                atmoCtx.beginPath();
+                atmoCtx.moveTo(headX, headY);
+                atmoCtx.lineTo(tailX, tailY);
+                atmoCtx.strokeStyle = gradient;
+                atmoCtx.lineWidth = 1.15;
+                atmoCtx.stroke();
+
+                if (
+                    headX < skyRect.x - 90 ||
+                    headY > skyRect.y + skyRect.h + 70
+                ) {
+                    resetStreak(streak, false);
+                }
+            }
+        }
+
+        function drawOrbitGlints(frame) {
+            const start = {
+                x: bgRect.x + bgRect.w * 0.50,
+                y: bgRect.y + bgRect.h * 0.13
+            };
+            const ctrl = {
+                x: bgRect.x + bgRect.w * 0.68,
+                y: bgRect.y + bgRect.h * 0.03
+            };
+            const end = {
+                x: bgRect.x + bgRect.w * 0.84,
+                y: bgRect.y + bgRect.h * 0.09
+            };
+
+            for (const glint of orbitGlints) {
+                glint.phase += glint.speed;
+                const t = (glint.phase + Math.sin(frame * 0.0006 + glint.phase) * 0.03) % 1;
+                const inv = 1 - t;
+                const x = inv * inv * start.x + 2 * inv * t * ctrl.x + t * t * end.x;
+                const y = inv * inv * start.y + 2 * inv * t * ctrl.y + t * t * end.y;
+                const tailT = Math.max(0, t - 0.03);
+                const tailInv = 1 - tailT;
+                const tailX = tailInv * tailInv * start.x + 2 * tailInv * tailT * ctrl.x + tailT * tailT * end.x;
+                const tailY = tailInv * tailInv * start.y + 2 * tailInv * tailT * ctrl.y + tailT * tailT * end.y;
+
+                atmoCtx.save();
+                atmoCtx.shadowBlur = 16;
+                atmoCtx.shadowColor = 'rgba(255, 244, 210, 0.65)';
+                const line = atmoCtx.createLinearGradient(tailX, tailY, x, y);
+                line.addColorStop(0, 'rgba(255, 240, 200, 0)');
+                line.addColorStop(0.6, `rgba(198, 220, 255, ${glint.alpha * 0.35})`);
+                line.addColorStop(1, `rgba(255, 248, 225, ${glint.alpha})`);
+                atmoCtx.strokeStyle = line;
+                atmoCtx.lineWidth = 1.25;
+                atmoCtx.beginPath();
+                atmoCtx.moveTo(tailX, tailY);
+                atmoCtx.lineTo(x, y);
+                atmoCtx.stroke();
+
+                const core = atmoCtx.createRadialGradient(x, y, 0, x, y, glint.size * 6);
+                core.addColorStop(0, 'rgba(255, 248, 225, 0.9)');
+                core.addColorStop(0.3, 'rgba(194, 216, 255, 0.45)');
+                core.addColorStop(1, 'rgba(194, 216, 255, 0)');
+                atmoCtx.fillStyle = core;
+                atmoCtx.beginPath();
+                atmoCtx.arc(x, y, glint.size * 6, 0, Math.PI * 2);
+                atmoCtx.fill();
+                atmoCtx.restore();
+            }
+        }
+
+        function drawAmbientPulses(frame) {
+            for (const pulse of ambientPulses) {
+                const wobble = 0.75 + Math.sin(frame * 0.0007 + pulse.phase) * 0.25;
+                const x = bgRect.x + bgRect.w * pulse.rx + Math.sin(frame * 0.0005 + pulse.phase) * pulse.driftX;
+                const y = bgRect.y + bgRect.h * pulse.ry + Math.cos(frame * 0.0006 + pulse.phase * 1.3) * pulse.driftY;
+                const radius = pulse.radius * wobble;
+                const gradient = atmoCtx.createRadialGradient(x, y, 0, x, y, radius);
+
+                if (pulse.warm) {
+                    gradient.addColorStop(0, `rgba(255, 236, 190, ${pulse.alpha * wobble})`);
+                    gradient.addColorStop(0.45, `rgba(255, 180, 120, ${pulse.alpha * 0.35 * wobble})`);
+                } else {
+                    gradient.addColorStop(0, `rgba(220, 232, 255, ${pulse.alpha * wobble})`);
+                    gradient.addColorStop(0.45, `rgba(190, 210, 255, ${pulse.alpha * 0.35 * wobble})`);
+                }
+                gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
+
+                atmoCtx.save();
+                atmoCtx.shadowBlur = pulse.warm ? 18 : 12;
+                atmoCtx.shadowColor = pulse.warm ? 'rgba(255, 200, 140, 0.35)' : 'rgba(200, 220, 255, 0.25)';
+                atmoCtx.fillStyle = gradient;
+                atmoCtx.beginPath();
+                atmoCtx.arc(x, y, radius, 0, Math.PI * 2);
+                atmoCtx.fill();
+                atmoCtx.restore();
+            }
+        }
+
+        function animateAtmo(frame) {
+            atmoCtx.clearRect(0, 0, canvasW, canvasH);
+            atmoCtx.save();
+            atmoCtx.globalCompositeOperation = 'lighter';
+            atmoCtx.beginPath();
+            atmoCtx.rect(skyRect.x - 30, skyRect.y - 20, skyRect.w + 60, skyRect.h + 60);
+            atmoCtx.clip();
+            drawGlow(frame);
+            drawTwinkles(frame);
+            drawOrbitGlints(frame);
+            drawStreaks();
+            atmoCtx.restore();
+
+            atmoCtx.save();
+            atmoCtx.globalCompositeOperation = 'screen';
+            atmoCtx.beginPath();
+            atmoCtx.rect(bgRect.x - 10, bgRect.y - 10, bgRect.w + 20, bgRect.h + 20);
+            atmoCtx.clip();
+            drawAmbientPulses(frame);
+            atmoCtx.restore();
+
+            requestAnimationFrame(animateAtmo);
+        }
+
+        const bgProbe = new Image();
+        bgProbe.onload = () => {
+            bgNaturalW = bgProbe.naturalWidth || bgNaturalW;
+            bgNaturalH = bgProbe.naturalHeight || bgNaturalH;
+            initAtmo();
+        };
+        bgProbe.src = '2.png';
+
+        initAtmo();
+        requestAnimationFrame(animateAtmo);
+        window.addEventListener('resize', initAtmo);
+
+        const leavePageUrl = 'leave.html';
+        const leaveHour = 21;
+        let hasRedirectedToLeavePage = false;
+
+        function tryRedirectToLeavePage(now) {
+            if (hasRedirectedToLeavePage) return;
+            if (now.getHours() >= leaveHour) {
+                hasRedirectedToLeavePage = true;
+                window.location.href = leavePageUrl;
+            }
+        }
+
+        function updateTime() {
+            const now = new Date();
+            tryRedirectToLeavePage(now);
+
+            const hours = String(now.getHours()).padStart(2, '0');
+            const minutes = String(now.getMinutes()).padStart(2, '0');
+            const seconds = String(now.getSeconds()).padStart(2, '0');
+            document.getElementById('time').textContent = `${hours}:${minutes}:${seconds}`;
+
+            const weekdays = ['日', '一', '二', '三', '四', '五', '六'];
+            const year = now.getFullYear();
+            const month = now.getMonth() + 1;
+            const day = now.getDate();
+            const weekday = weekdays[now.getDay()];
+            document.getElementById('date').textContent = `${year}年${month}月${day}日 星期${weekday}`;
+        }
+
+        updateTime();
+        setInterval(updateTime, 1000);
+
+        const fullscreenBtn = document.getElementById('fullscreen-btn');
+        fullscreenBtn.addEventListener('click', () => {
+            if (!document.fullscreenElement) {
+                document.documentElement.requestFullscreen();
+                fullscreenBtn.textContent = '×';
+            } else {
+                document.exitFullscreen();
+                fullscreenBtn.textContent = '⛶';
+            }
+        });
+
+        document.addEventListener('fullscreenchange', () => {
+            fullscreenBtn.textContent = document.fullscreenElement ? '×' : '⛶';
+        });
+
+        const timeContainer = document.getElementById('time-container');
+        let isDragging = false;
+        let currentX;
+        let currentY;
+        let initialX;
+        let initialY;
+        let xOffset = 0;
+        let yOffset = 0;
+        let currentScale = 1;
+        const minScale = 0.5;
+        const maxScale = 4;
+        const scaleStep = 0.05;
+
+        function applyScale() {
+            timeContainer.style.transform = `scale(${currentScale})`;
+        }
+
+        function setInitialPosition() {
+            const rect = timeContainer.getBoundingClientRect();
+            xOffset = rect.left;
+            yOffset = rect.top;
+            timeContainer.style.transformOrigin = 'top left';
+            timeContainer.style.right = 'auto';
+            timeContainer.style.top = 'auto';
+            timeContainer.style.left = xOffset + 'px';
+            timeContainer.style.top = yOffset + 'px';
+            applyScale();
+        }
+
+        function handleZoom(e) {
+            e.preventDefault();
+            const direction = e.deltaY < 0 ? 1 : -1;
+            currentScale += direction * scaleStep;
+            currentScale = Math.min(maxScale, Math.max(minScale, currentScale));
+            applyScale();
+        }
+
+        setTimeout(setInitialPosition, 100);
+
+        timeContainer.addEventListener('mousedown', dragStart);
+        timeContainer.addEventListener('wheel', handleZoom, { passive: false });
+        document.addEventListener('mousemove', drag);
+        document.addEventListener('mouseup', dragEnd);
+
+        function dragStart(e) {
+            initialX = e.clientX - xOffset;
+            initialY = e.clientY - yOffset;
+            isDragging = true;
+            timeContainer.classList.add('dragging');
+        }
+
+        function drag(e) {
+            if (isDragging) {
+                e.preventDefault();
+                currentX = e.clientX - initialX;
+                currentY = e.clientY - initialY;
+                xOffset = currentX;
+                yOffset = currentY;
+                timeContainer.style.left = `${currentX}px`;
+                timeContainer.style.top = `${currentY}px`;
+            }
+        }
+
+        function dragEnd() {
+            isDragging = false;
+            timeContainer.classList.remove('dragging');
+        }
+    </script>
+</body>
+</html>
